@@ -8,6 +8,7 @@ import fcntl
 from getpass import GetPassWarning, getpass
 import json
 import os
+import sqlite3
 from pathlib import Path
 from functools import lru_cache
 import time
@@ -27,6 +28,7 @@ EASTERN = ZoneInfo("America/New_York")
 FEEDBACK_WEIGHT = 20
 SYMBOLS = DEFAULT.split(",")
 DECISION_LOG = Path.home() / ".stock_paper_decisions.jsonl"
+SCORECARD = Path.home() / "paper_trade_scorecard.sqlite3"
 
 
 def paper(path, order=None):
@@ -44,10 +46,11 @@ def reward(net_return):
     return net_return - max(0, -net_return)
 
 
-def owned_positions(orders, session):
+def owned_positions(orders, session, closed_trades=None):
     positions = {}
     feedback = []
     entries = {}
+    entry_orders = {}
     fills = sorted((order for order in orders if Decimal(order["filled_qty"]) > 0),
                    key=lambda order: (order["filled_at"] or order["updated_at"], order["id"]))
     for order in fills:
@@ -60,6 +63,7 @@ def owned_positions(orders, session):
             if symbol not in entries:
                 entry_day = date.fromisoformat(order["client_order_id"][len(ORDER_PREFIX):][:10])
                 entries[symbol] = entry_day, Decimal(0), Decimal(0)
+                entry_orders[symbol] = order["client_order_id"]
             entry_day, cost, proceeds = entries[symbol]
             entries[symbol] = entry_day, cost + value, proceeds
             positions[symbol] = positions.get(symbol, Decimal(0)) + quantity
@@ -72,11 +76,51 @@ def owned_positions(orders, session):
             if positions[symbol] == 0:
                 del positions[symbol], entries[symbol]
                 exit_stamp = datetime.fromisoformat((order["filled_at"] or order["updated_at"]).replace("Z", "+00:00"))
+                entry_order = entry_orders.pop(symbol)
+                if closed_trades is not None:
+                    friction = Decimal(str(FRICTION))
+                    net_return = proceeds * (1 - friction) / (cost * (1 + friction)) - 1
+                    points = net_return * (100 if net_return >= 0 else 200)
+                    closed_trades.append((order["id"], symbol, entry_order,
+                                          exit_stamp.astimezone(EASTERN).isoformat(),
+                                          str(net_return), str(points)))
                 if exit_stamp.astimezone(EASTERN).date() < session:
                     feedback.append((symbol, entry_day, reward(float(proceeds / cost - 1))))
             else:
                 entries[symbol] = entry_day, cost, proceeds
     return positions, feedback
+
+
+def update_scorecard(account_id, closed_trades):
+    if not closed_trades:
+        return
+    new_scores = []
+    with sqlite3.connect(SCORECARD) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS scores (
+                account_id TEXT NOT NULL, exit_order TEXT NOT NULL,
+                symbol TEXT NOT NULL, entry_order TEXT NOT NULL,
+                closed_at TEXT NOT NULL, net_return TEXT NOT NULL,
+                points TEXT NOT NULL,
+                PRIMARY KEY (account_id, exit_order)
+            )
+        """)
+        db.execute("BEGIN IMMEDIATE")
+        total = sum((Decimal(row[0]) for row in db.execute(
+            "SELECT points FROM scores WHERE account_id = ?", (account_id,)
+        )), Decimal(0))
+        for trade in closed_trades:
+            inserted = db.execute(
+                "INSERT OR IGNORE INTO scores VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (account_id, *trade),
+            )
+            if inserted.rowcount:
+                total += Decimal(trade[-1])
+                new_scores.append((trade, total))
+    for (_, symbol, entry_order, closed_at, net_return, points), total in new_scores:
+        print(f"Scorecard | {symbol} | closed {closed_at} | "
+              f"net {Decimal(net_return):+.2%} | {Decimal(points):+.2f} points | "
+              f"total {total:+.2f} | entry {entry_order}", flush=True)
 
 
 @lru_cache(maxsize=1)
@@ -174,9 +218,15 @@ def run(submit):
     history = paper("/v2/orders?status=closed&limit=500&direction=asc")
     if len(history) >= 500:
         raise ValueError("Order history exceeds the safety limit. Review the account before continuing.")
-    owned, feedback = owned_positions(history, session)
+    closed_trades = [] if submit else None
+    owned, feedback = owned_positions(history, session, closed_trades)
     if owned != positions:
         raise ValueError("Positions do not match this AI's fills. Use a separate empty Paper account.")
+    if closed_trades:
+        try:
+            update_scorecard(account["id"], closed_trades)
+        except sqlite3.Error as exc:
+            print(f"Scorecard unavailable: {exc}", flush=True)
     ranked, incomplete, signal_date, scores, learned = targets(session, tuple(feedback))
     orders = orders_for(positions, ranked, incomplete, Decimal(account["cash"]))
     daily_change = Decimal(account["equity"]) - Decimal(account["last_equity"])
