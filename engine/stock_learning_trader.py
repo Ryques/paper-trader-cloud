@@ -250,6 +250,12 @@ def run(submit):
               flush=True)
         orders = [order for order in orders if order[1] == "sell"]
     print(f"AI learning | Prior closed paper trades used in training: {learned}", flush=True)
+    top_five = sorted(scores, key=lambda symbol: (-scores[symbol], symbol))[:5]
+    top_scores = ", ".join(f"{symbol} {scores[symbol]:+.4%}" for symbol in top_five)
+    skipped = ", ".join(sorted(incomplete))
+    print(f"AI diagnostics | Signal session: {signal_date} | Buy score: above 0% | "
+          f"Top scores: {top_scores or 'none'} | Skipped for missing inputs: {skipped or 'none'}",
+          flush=True)
     print(f"{session} | {'PAPER ORDERS' if submit else 'PREVIEW'} | "
           f"Candidates: {', '.join(ranked[:SLOTS]) or 'none'}", flush=True)
     if not orders:
