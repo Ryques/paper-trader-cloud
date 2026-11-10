@@ -1,0 +1,19 @@
+Cloud paper trader setup
+
+Use a private source repository and one Render Docker background worker, or run the
+Dockerfile on an always-on Linux host. This package points at Alpaca Paper only.
+
+1. Upload the contents of this folder to the private source repository. Keep keys
+   out of Git, the Dockerfile and chat.
+2. Configure APCA_API_KEY_ID and APCA_API_SECRET_KEY as host secrets. Use the
+   dedicated Alpaca Paper account for the learning trader. Attach persistent
+   storage at /var/data for the decision log. Run exactly one instance.
+3. Leave PAPER_TRADER_MODE unset for a single read-only preview. For a one-shot
+   preview on Render, use a shell/one-off invocation or expect the worker to exit.
+4. Stop the Mac trader with Control+C and confirm it stopped before starting the
+   cloud copy. Set PAPER_TRADER_MODE=trade to run the five-minute paper loop.
+5. Check the host logs and Alpaca Paper. To stop cloud paper trading, suspend
+   the worker. Existing orders and positions remain in Alpaca Paper.
+
+The existing ChatGPT briefing is separate. The cloud worker does not yet import
+the briefing, run the news comparison, or push status to Paper Trader Desk.
