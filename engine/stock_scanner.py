@@ -28,7 +28,10 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-DEFAULT = "AAPL,MSFT,NVDA,AMZN,GOOGL,META,AVGO,JPM,V,UNH,COST,XOM,HD,PG,KO,PEP,ABBV,AMD,CRM,WMT"
+DEFAULT = (
+    "AAPL,MSFT,NVDA,AMZN,GOOGL,META,AVGO,JPM,V,UNH,COST,XOM,HD,PG,KO,PEP,ABBV,AMD,CRM,WMT,"
+    "ADBE,ORCL,CAT,GE,UPS,NEE,DUK,COP,BAC,MCD"
+)
 BENCHMARK = "SPY"
 SLOTS = 3
 FRICTION = 0.001
