@@ -195,10 +195,25 @@ def orders_for(positions, ranked, incomplete, cash):
     return orders
 
 
+def premarket_model(session):
+    history = paper("/v2/orders?status=closed&limit=500&direction=asc")
+    if len(history) >= 500:
+        raise ValueError("Order history exceeds the safety limit.")
+    _, feedback = owned_positions(history, session)
+    _, _, signal_date, scores, _ = targets(session, tuple(feedback))
+    return scores, signal_date
+
+
 def run(submit):
     clock = paper("/v2/clock")
     session = date.fromisoformat(clock["timestamp"][:10])
     if submit and not clock["is_open"]:
+        if os.getenv("PAPER_PREMARKET_PREVIEW") == "1":
+            from stock_premarket import run_comparison
+            try:
+                run_comparison(clock, paper, premarket_model, completed_bars)
+            except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+                print(f"PREMARKET | comparison unavailable ({type(exc).__name__}): {exc}", flush=True)
         print("Market closed. No orders submitted.", flush=True)
         return
     account = paper("/v2/account")
