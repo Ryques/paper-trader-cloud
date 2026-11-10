@@ -7,6 +7,7 @@ from decimal import Decimal, ROUND_DOWN
 import fcntl
 from getpass import GetPassWarning, getpass
 import json
+from math import isfinite
 import os
 import sqlite3
 from pathlib import Path
@@ -136,7 +137,7 @@ def completed_bars(session):
 
 
 @lru_cache(maxsize=2)
-def targets(session, feedback):
+def targets(session, feedback, min_score=0.0):
     bars, dates = completed_bars(session)
     training = []
     for i in range(WINDOW - 1, len(dates) - HORIZON - 1):
@@ -168,7 +169,7 @@ def targets(session, feedback):
             incomplete.add(symbol)
         else:
             scores[symbol] = predict(x)
-    ranked = sorted((s for s in scores if scores[s] > 0), key=lambda s: (-scores[s], s))
+    ranked = sorted((s for s in scores if scores[s] > min_score), key=lambda s: (-scores[s], s))
     return ranked, incomplete, dates[-1], scores, learned
 
 
@@ -204,7 +205,7 @@ def premarket_model(session):
     return scores, signal_date
 
 
-def run(submit):
+def run(submit, min_score=0.0):
     clock = paper("/v2/clock")
     session = date.fromisoformat(clock["timestamp"][:10])
     if submit and not clock["is_open"]:
@@ -242,7 +243,7 @@ def run(submit):
             update_scorecard(account["id"], closed_trades)
         except sqlite3.Error as exc:
             print(f"Scorecard unavailable: {exc}", flush=True)
-    ranked, incomplete, signal_date, scores, learned = targets(session, tuple(feedback))
+    ranked, incomplete, signal_date, scores, learned = targets(session, tuple(feedback), min_score)
     orders = orders_for(positions, ranked, incomplete, Decimal(account["cash"]))
     daily_change = Decimal(account["equity"]) - Decimal(account["last_equity"])
     if daily_change <= -DAILY_LOSS_LIMIT:
@@ -253,7 +254,7 @@ def run(submit):
     top_five = sorted(scores, key=lambda symbol: (-scores[symbol], symbol))[:5]
     top_scores = ", ".join(f"{symbol} {scores[symbol]:+.4%}" for symbol in top_five)
     skipped = ", ".join(sorted(incomplete))
-    print(f"AI diagnostics | Signal session: {signal_date} | Buy score: above 0% | "
+    print(f"AI diagnostics | Signal session: {signal_date} | Buy score: above {min_score:+.2%} | "
           f"Top scores: {top_scores or 'none'} | Skipped for missing inputs: {skipped or 'none'}",
           flush=True)
     print(f"{session} | {'PAPER ORDERS' if submit else 'PREVIEW'} | "
@@ -283,9 +284,9 @@ def run(submit):
         slots = max(0, SLOTS - protected)
         estimate = scores[symbol]
         if side == "buy":
-            reason = f"AI ranked it #{rank} with a positive risk-adjusted score ({estimate:+.2%})."
+            reason = f"AI ranked it #{rank} with a risk-adjusted score of {estimate:+.2%}, above the {min_score:+.2%} cutoff."
         elif rank is None:
-            reason = f"AI estimated a nonpositive risk-adjusted score ({estimate:+.2%})."
+            reason = f"AI score {estimate:+.2%} did not exceed the {min_score:+.2%} cutoff."
         else:
             reason = f"AI ranked it #{rank}, outside the {slots} available ranking slots."
         record = {
@@ -315,6 +316,10 @@ def main():
     if args.watch and not args.submit:
         parser.error("--watch requires --submit.")
     try:
+        min_score_pct = float(os.getenv("PAPER_MIN_SCORE_PCT", "0"))
+        if not isfinite(min_score_pct) or not -1 <= min_score_pct <= 0:
+            raise ValueError("PAPER_MIN_SCORE_PCT must be between -1 and 0.")
+        min_score = min_score_pct / 100
         with (Path.home() / ".stock_paper_bot.lock").open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -327,7 +332,7 @@ def main():
                 if not os.environ[name]:
                     raise ValueError(f"Missing Alpaca Paper {label}.")
             while True:
-                run(args.submit)
+                run(args.submit, min_score)
                 if not args.watch:
                     break
                 time.sleep(300)
